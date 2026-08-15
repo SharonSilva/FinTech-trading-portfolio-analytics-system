@@ -45,4 +45,10 @@ public class Position{
         this.avgPrice = avgPrice;
     }
 
+    public UUID getPositionId() { return positionId; }
+    public UUID getAccountId() { return accountId; }
+    public String getSymbol() { return symbol; }
+    public int getQuantity() { return quantity; }
+    public BigDecimal getAvgPrice() { return avgPrice; }
+
 }

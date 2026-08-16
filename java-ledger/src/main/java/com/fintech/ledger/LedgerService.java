@@ -26,48 +26,91 @@ public class LedgerService {
 
     @Transactional
     public Trade executeBuy(UUID accountId, String symbol, int quantity, BigDecimal price) {
-        // 1. Load the account (must exist)
         Account account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new IllegalArgumentException("Account not found: " + accountId));
 
-        // 2. Compute the total cost of this buy
         BigDecimal cost = price.multiply(BigDecimal.valueOf(quantity));
 
-        // 3. Check sufficient funds
         if (account.getCashBalance().compareTo(cost) < 0) {
             throw new IllegalStateException("Insufficient funds: balance "
                     + account.getCashBalance() + " < cost " + cost);
         }
 
-        // 4. Record the trade
         Trade trade = new Trade(accountId, symbol, Trade.Side.BUY, quantity, price);
         tradeRepository.save(trade);
 
-        // 5. Update cash balance
         BigDecimal newBalance = account.getCashBalance().subtract(cost);
         account.setCashBalance(newBalance);
         accountRepository.save(account);
 
-        // 6. Double-entry: DEBIT cash (money leaving the account)
         LedgerEntry debit = new LedgerEntry(
                 trade.getTradeId(), accountId,
                 LedgerEntry.EntryType.DEBIT, cost, newBalance);
         ledgerEntryRepository.save(debit);
 
-        // 7. Double-entry: CREDIT the position (shares acquired)
         LedgerEntry credit = new LedgerEntry(
                 trade.getTradeId(), accountId,
                 LedgerEntry.EntryType.CREDIT, cost, newBalance);
         ledgerEntryRepository.save(credit);
 
-        // 8. Update or create the position
         Position position = positionRepository
                 .findByAccountIdAndSymbol(accountId, symbol)
                 .orElse(new Position(accountId, symbol, 0, BigDecimal.ZERO));
 
-        int newQty = position.getQuantity() + quantity;
+        // Weighted-average cost basis:
+        // newAvg = (oldQty*oldAvg + buyQty*buyPrice) / (oldQty + buyQty)
+        int oldQty = position.getQuantity();
+        BigDecimal oldCostTotal = position.getAvgPrice().multiply(BigDecimal.valueOf(oldQty));
+        BigDecimal addedCostTotal = price.multiply(BigDecimal.valueOf(quantity));
+        int newQty = oldQty + quantity;
+        BigDecimal newAvg = oldCostTotal.add(addedCostTotal)
+                .divide(BigDecimal.valueOf(newQty), 4, java.math.RoundingMode.HALF_UP);
+
         position.setQuantity(newQty);
-        position.setAvgPrice(price); // simplified for now; weighted avg comes later
+        position.setAvgPrice(newAvg);
+        positionRepository.save(position);
+
+        return trade;
+    }
+
+    @Transactional
+    public Trade executeSell(UUID accountId, String symbol, int quantity, BigDecimal price) {
+        Account account = accountRepository.findById(accountId)
+                .orElseThrow(() -> new IllegalArgumentException("Account not found: " + accountId));
+
+        Position position = positionRepository
+                .findByAccountIdAndSymbol(accountId, symbol)
+                .orElseThrow(() -> new IllegalStateException("No position in " + symbol + " to sell"));
+
+        if (position.getQuantity() < quantity) {
+            throw new IllegalStateException("Insufficient shares: holding "
+                    + position.getQuantity() + " < sell quantity " + quantity);
+        }
+
+        BigDecimal proceeds = price.multiply(BigDecimal.valueOf(quantity));
+
+        Trade trade = new Trade(accountId, symbol, Trade.Side.SELL, quantity, price);
+        tradeRepository.save(trade);
+
+        BigDecimal newBalance = account.getCashBalance().add(proceeds);
+        account.setCashBalance(newBalance);
+        accountRepository.save(account);
+
+        // Double-entry: CREDIT cash (money coming in), DEBIT the position (shares leaving)
+        LedgerEntry credit = new LedgerEntry(
+                trade.getTradeId(), accountId,
+                LedgerEntry.EntryType.CREDIT, proceeds, newBalance);
+        ledgerEntryRepository.save(credit);
+
+        LedgerEntry debit = new LedgerEntry(
+                trade.getTradeId(), accountId,
+                LedgerEntry.EntryType.DEBIT, proceeds, newBalance);
+        ledgerEntryRepository.save(debit);
+
+        // Reduce the position. Avg price stays the same when selling
+        // (selling doesn't change your cost basis on remaining shares).
+        int newQty = position.getQuantity() - quantity;
+        position.setQuantity(newQty);
         positionRepository.save(position);
 
         return trade;

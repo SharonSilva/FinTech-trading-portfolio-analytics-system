@@ -32,6 +32,16 @@ public class LedgerController {
                 request.price());
     }
 
+    @PostMapping("/trades/sell")
+    public Trade sell(@RequestBody BuyRequest request){
+        return ledgerService.executeSell(
+            request.accountId(),
+            request.symbol(),
+            request.quantity(),
+            request.price()
+        );
+    }
+
     public record CreateAccountRequest(String ownerName, BigDecimal startingCash) {}
     public record BuyRequest(UUID accountId, String symbol, int quantity, BigDecimal price) {}
 }
